@@ -1,0 +1,66 @@
+# Local Python environments
+.venv/
+venv/
+venv312/
+env/
+
+# Python caches and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Model weights and download caches
+models/
+.cache/
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.incomplete
+
+# Private recordings: do not publish input media
+*.mp3
+*.MP3
+*.wav
+*.WAV
+*.flac
+*.ogg
+*.opus
+*.m4a
+*.aac
+*.mp4
+*.MP4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.wma
+*.wmv
+
+# Generated transcripts, logs and local settings
+logs/
+outputs/
+transcripts/
+*.log
+*.tmp
+.env
+.env.*
+!.env.example
+
+# Local editor/agent settings and OS files
+.idea/
+.vscode/
+.codex/
+.agents/
+Thumbs.db
+Desktop.ini
+.DS_Store
