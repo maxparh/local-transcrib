@@ -1,11 +1,13 @@
 """Qt worker adapter. Core work and model cleanup happen off the UI thread."""
 
 import logging
+from threading import Event
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from preprocessing import MediaError
 from transcription_service import DeviceError
+from text_formatting import FormattingError, OllamaFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +17,17 @@ class TranscriptionWorker(QObject):
     stage_changed = Signal(str)
     progress_changed = Signal(float, float, str)
     succeeded = Signal(object)
+    formatted = Signal(str)
+    formatting_progress = Signal(str)
     failed = Signal(str)
     operation_finished = Signal()
     shutdown_finished = Signal()
 
-    def __init__(self, service):
+    def __init__(self, service, formatter=None):
         super().__init__()
         self.service = service
+        self.formatter = formatter  # Optional provider constructed only on opt-in.
+        self.cancel = Event()
         self._stage = "preparing"
 
     @Slot()
@@ -37,16 +43,24 @@ class TranscriptionWorker(QObject):
         self._stage = stage
         self.stage_changed.emit(stage)
 
-    @Slot(str, str)
-    def transcribe(self, path, device):
+    @Slot(str, str, str, str)
+    def transcribe(self, path, device, source="", instruction=""):
         self._stage = "preparing"
         try:
+            if source:
+                self.service.set_model_source(source)
             result = self.service.transcribe(path, device=device, on_stage=self._on_stage,
                                              on_progress=self.progress_changed.emit)
             self.succeeded.emit(result)
+            if instruction and result.text.strip() and not self.cancel.is_set():
+                self._format(result.text, instruction)
         except Exception as exc:
             logger.exception("Transcription failed during %s on %s", self._stage, device)
-            if isinstance(exc, MediaError):
+            if isinstance(exc, FormattingError):
+                message = str(exc)
+            elif self._stage == "formatting":
+                message = "Не удалось оформить текст. Исходная транскрипция сохранена."
+            elif isinstance(exc, MediaError):
                 message = str(exc)
             elif isinstance(exc, DeviceError):
                 message = "Выбранное устройство недоступно. Попробуйте CPU или проверьте настройку CUDA."
@@ -60,6 +74,25 @@ class TranscriptionWorker(QObject):
         finally:
             self.operation_finished.emit()
 
+    def _format(self, text, instruction):
+        self._on_stage("formatting")
+        self.service.unload_model()  # ASR and SLM never reserve VRAM together.
+        if self.formatter is None:
+            self.formatter = OllamaFormatter()
+        result = self.formatter.format(text, instruction,
+                                       on_progress=self.formatting_progress.emit, cancel=self.cancel)
+        self.formatted.emit(result)
+
+    @Slot(str, str)
+    def format_text(self, text, instruction):
+        try:
+            self._format(text, instruction)
+        except Exception as exc:
+            logger.exception("Text formatting failed")
+            self.failed.emit(str(exc) if isinstance(exc, FormattingError) else "Не удалось оформить текст. Исходная транскрипция сохранена.")
+        finally:
+            self.operation_finished.emit()
+
     @Slot()
     def shutdown(self):
         # Queued behind the active operation; no forced thread termination.
@@ -68,4 +101,10 @@ class TranscriptionWorker(QObject):
         except Exception:
             logger.exception("Model cleanup failed")
         finally:
-            self.shutdown_finished.emit()
+            try:
+                if self.formatter is not None:
+                    self.formatter.close()
+            except Exception:
+                logger.exception("Formatting runtime cleanup failed")
+            finally:
+                self.shutdown_finished.emit()

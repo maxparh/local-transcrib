@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "application": "LocalTranscriber",
+  "asr": {
+    "required": true,
+    "provider": "ctranslate2",
+    "repository": "bzikst/faster-whisper-large-v3-russian",
+    "revision": "feaed039c2a985100d7d9f80146240c897177c9f",
+    "directory": "models/whisper-russian",
+    "files": [
+      "config.json",
+      "model.bin",
+      "preprocessor_config.json",
+      "tokenizer.json",
+      "vocabulary.json"
+    ]
+  },
+  "formatting": {
+    "required": false,
+    "default_selected": false,
+    "provider": "ollama",
+    "model": "qwen3:4b-instruct",
+    "tested_runtime_version": "0.30.6",
+    "endpoint": "http://127.0.0.1:11434",
+    "thinking": false
+  }
+}

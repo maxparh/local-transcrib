@@ -34,6 +34,9 @@ class FakeService:
         self.unloaded = False
         self.text = "Привет, мир!\r\nВторая строка.\n"
 
+    def set_model_source(self, source):
+        self.model_source = source
+
     def cuda_available(self):
         self.thread_ids.append(threading.get_ident())
         if isinstance(self.cuda, Exception):
@@ -60,6 +63,33 @@ class FakeService:
         self.unloaded = True
 
 
+class FakeFormatter:
+    def __init__(self):
+        self.calls = []
+        self.thread_ids = []
+        self.error = None
+        self.closed = False
+        self.started = threading.Event()
+        self.gate = threading.Event()
+        self.gate.set()
+
+    def format(self, text, instruction, *, on_progress, cancel):
+        self.calls.append((text, instruction))
+        self.thread_ids.append(threading.get_ident())
+        self.started.set()
+        while not self.gate.wait(0.01):
+            if cancel.is_set():
+                from text_formatting import FormattingCancelled
+                raise FormattingCancelled("Форматирование отменено")
+        if self.error:
+            raise self.error
+        on_progress("Предварительный конспект")
+        return "Готовый конспект"
+
+    def close(self):
+        self.closed = True
+
+
 class DesktopTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -72,6 +102,7 @@ class DesktopTests(unittest.TestCase):
         self.file = self.root / "input.unknown"
         self.file.write_bytes(b"test input")
         self.service = FakeService()
+        self.formatter = FakeFormatter()
         self.settings = QSettings(str(self.root / "settings.ini"), QSettings.Format.IniFormat)
         self.window = None
 
@@ -83,13 +114,14 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(predicate(), "Qt event did not complete")
 
     def open_window(self):
-        self.window = desktop.MainWindow(self.service, self.settings)
+        self.window = desktop.MainWindow(self.service, self.settings, formatter=self.formatter)
         self.window.show()
         self.pump_until(lambda: self.window._ready)
         return self.window
 
     def tearDown(self):
         self.service.gate.set()
+        self.formatter.gate.set()
         if self.window is not None:
             self.window.close()
             self.pump_until(lambda: self.window._stopped)
@@ -209,6 +241,66 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(window._thread.wait(1000))
         self.assertTrue(self.service.unloaded)
         self.assertNotEqual(self.service.thread_ids[-1], threading.get_ident())
+
+
+    def test_opt_in_formatting_keeps_original_and_serializes_work(self):
+        window = self.open_window()
+        window.select_file(self.file)
+        window.format_checkbox.setChecked(True)
+        self.service.gate.set()
+        self.formatter.gate.clear()
+        with patch.object(window, "configure_formatting", return_value=True):
+            window.start_transcription()
+        self.pump_until(self.formatter.started.is_set)
+        self.assertTrue(self.service.unloaded)
+        self.assertTrue(window._busy)
+        self.assertEqual(window._original_text, self.service.text)
+        self.assertFalse(window.model_selector.isEnabled())
+        self.assertFalse(window.format_button.isEnabled())
+        heartbeat = []
+        QTimer.singleShot(0, lambda: heartbeat.append(True))
+        self.pump_until(lambda: bool(heartbeat))
+        window.start_transcription()
+        self.assertEqual(len(self.service.calls), 1)
+        self.formatter.gate.set()
+        self.pump_until(lambda: not window._busy)
+        self.assertEqual(window._result_text, "Готовый конспект")
+        window.copy_text()
+        self.assertEqual(self.app.clipboard().text(), "Готовый конспект")
+        target = self.root / "note.txt"
+        with patch.object(desktop.QFileDialog, "getSaveFileName", return_value=(str(target), "")):
+            window.save_text()
+        self.assertEqual(target.read_text(encoding="utf-8"), "Готовый конспект")
+        window.restore_original()
+        self.assertEqual(window._result_text, self.service.text)
+        self.assertNotEqual(self.formatter.thread_ids[0], threading.get_ident())
+
+    def test_formatting_failure_and_close_preserve_raw_and_stop_thread(self):
+        from text_formatting import FormattingError
+        window = self.open_window()
+        window.select_file(self.file)
+        self.service.gate.set()
+        window.start_transcription()
+        self.pump_until(lambda: not window._busy)
+        self.assertEqual(self.formatter.calls, [])  # SLM disabled by default.
+        self.assertEqual(self.service.model_source, window.model_selector.currentData())
+        self.formatter.error = FormattingError("Модель не установлена")
+        with self.assertLogs("desktop_worker", level="ERROR"), patch.object(window, "configure_formatting", return_value=True):
+            window.start_formatting()
+            self.pump_until(lambda: not window._busy)
+        self.assertEqual(window._result_text, self.service.text)
+        self.assertEqual(window.result_edit.toPlainText(), self.service.text.replace("\r\n", "\n"))
+        self.formatter.error = None
+        self.formatter.started.clear()
+        self.formatter.gate.clear()
+        with patch.object(window, "configure_formatting", return_value=True):
+            window.start_formatting()
+        self.pump_until(self.formatter.started.is_set)
+        with self.assertLogs("desktop_worker", level="ERROR"):
+            window.close()
+            self.pump_until(lambda: window._stopped)
+        self.assertTrue(window._thread.wait(1000))
+        self.assertTrue(self.formatter.closed)
 
 
 class DesktopImportTests(unittest.TestCase):

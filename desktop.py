@@ -9,9 +9,11 @@ from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QMainWindow, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QInputDialog, QDialog,
 )
 
 import config
+from app_paths import data_directory
 from desktop_worker import TranscriptionWorker
 from transcription_service import TranscriptionService
 
@@ -21,18 +23,22 @@ STAGES = {
     "loading": "Загрузка модели…",
     "switching": "Переключение устройства и загрузка модели…",
     "transcribing": "Транскрибация…",
+    "formatting": "Оформление текста локальной моделью…",
 }
 
 
 class MainWindow(QMainWindow):
-    transcribe_requested = Signal(str, str)
+    transcribe_requested = Signal(str, str, str, str)
+    format_requested = Signal(str, str)
     shutdown_requested = Signal()
 
-    def __init__(self, service=None, settings=None):
+    def __init__(self, service=None, settings=None, formatter=None):
         super().__init__()
         self._settings = settings if settings is not None else QSettings("LinerTranscriber", "Desktop")
         self._path = None
         self._result_text = ""
+        self._original_text = ""
+        self._format_instruction = str(self._settings.value("format_instruction", "Оформи запись как конспект: проблема, важные детали, решения и дальнейшие действия."))
         self._ready = self._busy = self._closing = self._stopped = False
         self.setWindowTitle("Транскрибация аудио и видео")
         self.resize(900, 720)
@@ -42,15 +48,18 @@ class MainWindow(QMainWindow):
 
         # One service and one persistent worker. No HTTP or second model owner.
         self._thread = QThread(self)
-        self._worker = TranscriptionWorker(service if service is not None else TranscriptionService())
+        self._worker = TranscriptionWorker(service if service is not None else TranscriptionService(), formatter=formatter)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.check_devices)
         self.transcribe_requested.connect(self._worker.transcribe)
+        self.format_requested.connect(self._worker.format_text)
         self.shutdown_requested.connect(self._worker.shutdown)
         self._worker.devices_ready.connect(self._devices_ready)
         self._worker.stage_changed.connect(self._stage_changed)
         self._worker.progress_changed.connect(self._progress_changed)
         self._worker.succeeded.connect(self._succeeded)
+        self._worker.formatted.connect(self._formatted)
+        self._worker.formatting_progress.connect(self._formatting_progress)
         self._worker.failed.connect(self._failed)
         self._worker.operation_finished.connect(self._operation_finished)
         self._worker.shutdown_finished.connect(self._thread.quit)
@@ -102,6 +111,23 @@ class MainWindow(QMainWindow):
         options.addWidget(self.start_button)
         layout.addLayout(options)
 
+        model_options = QHBoxLayout()
+        model_options.addWidget(QLabel("Модель речи:"))
+        self.model_selector = QComboBox()
+        self.model_selector.addItem("Whisper large-v3 — русский", config.MODEL_SOURCE)
+        self.model_selector.addItem("Whisper large-v3 — исходная", config.ORIGINAL_MODEL_SOURCE)
+        self.model_selector.setCurrentIndex(1 if self._settings.value("model_profile", "russian") == "original" else 0)
+        model_options.addWidget(self.model_selector, 1)
+        layout.addLayout(model_options)
+
+        formatting_options = QHBoxLayout()
+        self.format_checkbox = QCheckBox("Оформить после распознавания (локальная ИИ)")
+        self.instruction_button = QPushButton("Инструкция…")
+        self.instruction_button.clicked.connect(self.configure_formatting)
+        formatting_options.addWidget(self.format_checkbox, 1)
+        formatting_options.addWidget(self.instruction_button)
+        layout.addLayout(formatting_options)
+
         self.status_label = QLabel("Проверка доступных устройств…")
         self.status_label.setWordWrap(True)
         self.status_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -118,6 +144,12 @@ class MainWindow(QMainWindow):
         self.result_edit.setPlaceholderText("Здесь появится текст транскрипции")
         layout.addWidget(self.result_edit, 1)
         actions = QHBoxLayout()
+        self.format_button = QPushButton("Оформить…")
+        self.format_button.clicked.connect(self.start_formatting)
+        self.original_button = QPushButton("Исходный текст")
+        self.original_button.clicked.connect(self.restore_original)
+        actions.addWidget(self.format_button)
+        actions.addWidget(self.original_button)
         actions.addStretch()
         self.copy_button = QPushButton("Копировать")
         self.copy_button.clicked.connect(self.copy_text)
@@ -151,6 +183,11 @@ class MainWindow(QMainWindow):
         enabled = self._ready and not self._busy and not self._closing
         self.choose_button.setEnabled(not self._busy and not self._closing)
         self.device_selector.setEnabled(enabled)
+        self.model_selector.setEnabled(enabled)
+        self.format_checkbox.setEnabled(enabled)
+        self.instruction_button.setEnabled(enabled)
+        self.format_button.setEnabled(enabled and bool(self._original_text))
+        self.original_button.setEnabled(enabled and bool(self._original_text))
         self.start_button.setEnabled(enabled and self._path is not None)
         self.copy_button.setEnabled(bool(self._result_text) and not self._closing)
         self.save_button.setEnabled(bool(self._result_text) and not self._closing)
@@ -176,7 +213,7 @@ class MainWindow(QMainWindow):
         self._path = path
         self.file_label.setText(path.name)
         self.file_label.setToolTip(str(path))
-        self._result_text = ""
+        self._result_text = self._original_text = ""
         self.result_edit.clear()
         self.status_label.setText("Файл выбран")
         self._update_controls()
@@ -185,25 +222,84 @@ class MainWindow(QMainWindow):
     def start_transcription(self):
         if not self._ready or self._busy or self._closing or self._path is None:
             return
+        if self.format_checkbox.isChecked() and not self.configure_formatting():
+            return
+        self._settings.setValue("model_profile", "original" if self.model_selector.currentIndex() == 1 else "russian")
         self._busy = True
         self.progress.setRange(0, 0)
-        self._result_text = ""
+        self._result_text = self._original_text = ""
         self.result_edit.clear()
         self.status_label.setText("Подготовка файла…")
         self._update_controls()
-        self.transcribe_requested.emit(str(self._path), self.device_selector.currentData())
+        self.transcribe_requested.emit(str(self._path), self.device_selector.currentData(),
+                                       self.model_selector.currentData(),
+                                       self._format_instruction if self.format_checkbox.isChecked() else "")
 
     @Slot(str)
     def _stage_changed(self, stage):
         if not self._closing:
             self.status_label.setText(STAGES.get(stage, "Обработка…"))
+            if stage == "formatting":
+                self.progress.setRange(0, 0)
 
     @Slot(object)
     def _succeeded(self, result):
         if not self._closing:
-            self._result_text = result.text  # Exact source for copy/save.
+            self._result_text = self._original_text = result.text  # Original survives SLM errors.
             self.result_edit.setPlainText(result.text)
             self.status_label.setText("Готово" if result.text else "Готово — речь не обнаружена")
+
+    @Slot()
+    def configure_formatting(self):
+        if self._busy or self._closing:
+            return False
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Инструкция локальной ИИ")
+        dialog.setLabelText("Например: «Оформи как конспект» или «Сплошной текст без сокращений».\nИсходная транскрипция сохранится. Нужны Ollama и Qwen3 4B Instruct.")
+        dialog.setOption(QInputDialog.InputDialogOption.UsePlainTextEditForTextInput, True)
+        dialog.setTextValue(self._format_instruction)
+        dialog.resize(640, 320)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        instruction = dialog.textValue().strip()
+        if not instruction or len(instruction) > config.FORMATTING_PROMPT_MAX_CHARS:
+            self._failed(f"Введите инструкцию до {config.FORMATTING_PROMPT_MAX_CHARS} символов.")
+            return False
+        self._format_instruction = instruction
+        self._settings.setValue("format_instruction", instruction)
+        return True
+
+    @Slot()
+    def start_formatting(self):
+        if not self._ready or self._busy or self._closing or not self._original_text:
+            return
+        if not self.configure_formatting():
+            return
+        self._busy = True
+        self._result_text = self._original_text
+        self.result_edit.setPlainText(self._original_text)
+        self.progress.setRange(0, 0)
+        self._update_controls()
+        self.format_requested.emit(self._original_text, self._format_instruction)
+
+    @Slot(str)
+    def _formatted(self, text):
+        if not self._closing:
+            self._result_text = text
+            self.result_edit.setPlainText(text)
+            self.status_label.setText("Готово — текст оформлен; исходник сохранён")
+
+    @Slot(str)
+    def _formatting_progress(self, text):
+        if not self._closing:
+            self.result_edit.setPlainText(text)
+
+    @Slot()
+    def restore_original(self):
+        if not self._busy and not self._closing and self._original_text:
+            self._result_text = self._original_text
+            self.result_edit.setPlainText(self._original_text)
+            self.status_label.setText("Исходная транскрипция")
 
     @Slot(float, float, str)
     def _progress_changed(self, processed, total, text):
@@ -219,6 +315,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _failed(self, message):
         if not self._closing:
+            self.result_edit.setPlainText(self._result_text)
             self.status_label.setText(f"Ошибка: {message}")
 
     @Slot()
@@ -277,6 +374,7 @@ class MainWindow(QMainWindow):
         event.ignore()
         if not self._closing:
             self._closing = True
+            self._worker.cancel.set()  # Thread-safe cancellation; shutdown is still queued.
             self.status_label.setText("Закрытие после завершения текущей операции…" if self._busy else "Освобождение модели…")
             self._update_controls()
             self.shutdown_requested.emit()
@@ -288,8 +386,8 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    log_directory = Path(__file__).resolve().parent / "logs"
-    log_directory.mkdir(exist_ok=True)
+    log_directory = data_directory() / "logs"
+    log_directory.mkdir(parents=True, exist_ok=True)
     crash_log = (log_directory / "desktop-crash.log").open("a", encoding="utf-8")
     faulthandler.enable(file=crash_log, all_threads=True)
     logging.basicConfig(

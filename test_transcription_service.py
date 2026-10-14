@@ -54,6 +54,17 @@ class ServiceTests(unittest.TestCase):
             output.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
             output.writeframes(b"\0\0" * 160)
 
+    def test_switch_weights_releases_existing_model_before_loading_another(self):
+        self.service.load_model("cpu")
+        self.service.set_model_source("other-russian-model")
+        self.assertFalse(self.service.is_loaded)
+        self.assertTrue(all(ref() is None for ref in self.references))
+        self.service.load_model("cpu")
+        self.assertEqual(self.factory.call_args.args[0], "other-russian-model")
+        self.service.set_model_source("other-russian-model")
+        self.assertTrue(self.service.is_loaded)
+        self.assertEqual(self.factory.call_count, 2)
+
     def test_lifecycle_and_single_model(self):
         self.assertFalse(self.service.is_loaded)
         self.factory.assert_not_called()

@@ -2,6 +2,8 @@
 
 import os
 
+from app_paths import russian_model_source
+
 
 def _env(name, default):
     return os.environ.get(f"TRANSCRIBER_{name}", default)
@@ -21,8 +23,10 @@ def _boolean(name, default):
     return value in {"true", "1"}
 
 
-MODEL_NAME = _env("MODEL_NAME", "large-v3")
-MODEL_SOURCE = _env("MODEL_SOURCE", MODEL_NAME)  # Identifier or local directory.
+RUSSIAN_MODEL_REPOSITORY = "bzikst/faster-whisper-large-v3-russian"
+MODEL_NAME = _env("MODEL_NAME", RUSSIAN_MODEL_REPOSITORY)
+MODEL_SOURCE = _env("MODEL_SOURCE", russian_model_source(MODEL_NAME) if MODEL_NAME == RUSSIAN_MODEL_REPOSITORY else MODEL_NAME)
+ORIGINAL_MODEL_SOURCE = _env("ORIGINAL_MODEL_SOURCE", "large-v3")
 DEVICE = _env("DEVICE", "auto")
 if DEVICE not in {"auto", "cuda", "cpu"}:
     raise ValueError("TRANSCRIBER_DEVICE must be auto, cuda or cpu")
@@ -55,3 +59,14 @@ TRANSCRIPTION_OPTIONS = {
 }
 
 TEMP_DIR = _env("TEMP_DIR", "") or None  # None uses the system temporary directory.
+
+# Optional text runtime: provisioned separately by the future installer.
+OLLAMA_URL = _env("OLLAMA_URL", "http://127.0.0.1:11434")
+OLLAMA_EXECUTABLE = _env("OLLAMA_EXECUTABLE", "")
+OLLAMA_MODELS_DIR = _env("OLLAMA_MODELS_DIR", "")
+FORMATTING_MODEL = _env("FORMATTING_MODEL", "qwen3:4b-instruct")
+FORMATTING_MAX_CHARS = _integer("FORMATTING_MAX_CHARS", 24000, 1)
+FORMATTING_PROMPT_MAX_CHARS = _integer("FORMATTING_PROMPT_MAX_CHARS", 2000, 1)
+FORMATTING_CONTEXT = _integer("FORMATTING_CONTEXT", 32768, 1)
+FORMATTING_OUTPUT_TOKENS = _integer("FORMATTING_OUTPUT_TOKENS", 8192, 1)
+FORMATTING_TIMEOUT_SECONDS = _integer("FORMATTING_TIMEOUT_SECONDS", 300, 1)

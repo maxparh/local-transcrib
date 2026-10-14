@@ -85,6 +85,8 @@ def _resolve_device(requested, cpu_compute_type, gpu_compute_type):
 
 
 def _create_model(source, **kwargs):
+    if os.path.isabs(source) and not os.path.isdir(source):
+        raise FileNotFoundError("Модель Whisper не установлена: " + source)
     from faster_whisper import WhisperModel
     # Prefer an already cached model: switching devices should not make an
     # HTTP request. Keep first-run development downloads available if missing.
@@ -160,6 +162,14 @@ class TranscriptionService:
             )
             self._device, self._compute_type = selected, compute_type
             self._requested_device = requested
+
+    def set_model_source(self, source):
+        """Switch weights through the same lifecycle; never keep two models."""
+        source = os.fspath(source)
+        with self._lock:
+            if source != self.model_source:
+                self.unload_model()
+                self.model_source = source
 
     def switch_device(self, device):
         """Wait for active transcription, then load on the requested device."""
