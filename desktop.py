@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 import config
-from app_paths import data_directory
+from app_paths import data_directory, install_directory
 from desktop_worker import TranscriptionWorker
 from transcription_service import TranscriptionService
 
@@ -34,6 +34,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self, service=None, settings=None, formatter=None):
         super().__init__()
+        if settings is None and (install_directory() / "portable.flag").is_file():
+            data_directory().mkdir(parents=True, exist_ok=True)
+            settings = QSettings(str(data_directory() / "settings.ini"), QSettings.Format.IniFormat)
         self._settings = settings if settings is not None else QSettings("LinerTranscriber", "Desktop")
         self._path = None
         self._result_text = ""

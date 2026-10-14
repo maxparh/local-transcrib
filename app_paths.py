@@ -12,6 +12,8 @@ def data_directory():
     override = os.environ.get("TRANSCRIBER_DATA_DIR")
     if override:
         return Path(override).expanduser().resolve()
+    if getattr(sys, "frozen", False) and (install_directory() / "portable.flag").is_file():
+        return install_directory() / "data"
     if not getattr(sys, "frozen", False):
         return install_directory()
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "LocalTranscriber"

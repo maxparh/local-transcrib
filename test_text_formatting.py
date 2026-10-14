@@ -101,6 +101,13 @@ class FormatterTests(unittest.TestCase):
 
 
 class InstallPathsTests(unittest.TestCase):
+    def test_portable_marker_keeps_data_beside_executable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "portable.flag").write_text("portable")
+            with patch.object(app_paths.sys, "frozen", True, create=True), patch.object(app_paths.sys, "executable", str(root / "LocalTranscriber.exe")), patch.dict(app_paths.os.environ, {}, clear=True):
+                self.assertEqual(app_paths.data_directory(), root / "data")
+
     def test_frozen_assets_and_logs_do_not_use_extraction_or_cwd(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

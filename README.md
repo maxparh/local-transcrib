@@ -89,3 +89,18 @@ $env:TRANSCRIBER_DEVICE = 'cuda'
 
 `.gitignore` исключает `.venv`, веса, исходные аудио/видео, логи и локальные настройки.
 Готовые транскрипции сохраняйте в `transcripts/` или `outputs/`, чтобы они также не попали в Git.
+
+## Portable-сборка
+
+В `dist/LocalTranscriber-portable` находится автономная сборка для Windows x64.
+Переносите всю папку, запускайте `LocalTranscriber.exe`; Python на целевом ПК не требуется.
+Инструкция — [PORTABLE.md](PORTABLE.md). Ollama и SLM поставляются отдельно.
+
+Для воспроизведения сборки из подготовленной `.venv` и скачанных русских весов:
+
+```powershell
+.\build_portable.ps1
+```
+
+Инструменты сборки устанавливаются только в `build/tools` с версиями из
+`requirements-build.txt`; рабочие ML/GPU-пакеты не обновляются.
